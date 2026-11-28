@@ -1,0 +1,1362 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BalleBalleBhangra</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#171725;color:white;font-family:Arial;overflow:hidden}
+canvas{display:block;width:100vw;height:100vh;background:#252438;cursor:crosshair}
+#hud{position:fixed;top:12px;left:12px;background:#000a;padding:12px 15px;border-radius:9px;line-height:1.65;font-size:14px;pointer-events:none}
+#notice{position:fixed;top:42%;left:50%;transform:translate(-50%,-50%);font-size:clamp(25px,5vw,48px);font-weight:bold;text-align:center;text-shadow:2px 3px 7px black;pointer-events:none;white-space:pre-line}
+#help{position:fixed;bottom:10px;left:12px;background:#000a;padding:9px;border-radius:8px;font-size:12px;pointer-events:none}
+#saveMenu{display:none;position:fixed;inset:0;background:#000c;align-items:center;justify-content:center;z-index:5}
+#savePanel{background:#29283d;padding:20px;border-radius:12px;width:min(520px,92vw)}
+.slot{background:#171725;padding:12px;margin:10px 0;border-radius:8px}
+button{padding:8px 12px;margin:4px;border:0;border-radius:6px;background:#6261db;color:white;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+.danger{background:#a83d4d}
+small{color:#bbb}
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+<b>BALLE BALLE BHANGRA</b><br>
+Level: <span id="level">1</span><br>
+XP: <span id="xp">0</span> / 1500<br>
+Score: <span id="score">0</span><br>
+Health: <span id="health">3</span> / 3<br>
+Innocent casualties: <span id="casualties">0</span><br>
+Suspicion: <span id="suspicion">0</span>%<br>
+Weapon: <span id="weapon">Pistol</span><br>
+Police: <span id="policeCount">0</span><br>
+DJ: <span id="djStatus">Active</span><br>
+Crowd: <span id="crowdCount">110</span><br>
+Target: <span id="targetStatus">Off</span>
+</div>
+
+<div id="notice"></div>
+
+<div id="help">
+WASD / Arrows: Move · Mouse: Aim · Left click: Shoot<br>
+E: Toggle aiming · Space: Slow motion<br>
+Shift + A: Lock-on · Arrow keys: Select target · F6: Save manager
+</div>
+
+<div id="saveMenu">
+ <div id="savePanel">
+  <h2>💾 Save Manager</h2>
+  <p>The game pauses while this menu is open.</p>
+  <div id="slots"></div>
+  <button onclick="closeSaveMenu()">Close (F6)</button>
+ </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+
+let W,H;
+
+function resize(){
+ W=canvas.width=innerWidth;
+ H=canvas.height=innerHeight;
+}
+addEventListener("resize",resize);
+resize();
+
+const $=id=>document.getElementById(id);
+const rand=(a,b)=>Math.random()*(b-a)+a;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+
+function stageRect(){
+ return {
+  left:W/2-85,
+  right:W/2+85,
+  top:25,
+  bottom:120
+ };
+}
+
+function overlapsStage(n){
+ const s=stageRect();
+ const x=clamp(n.x,s.left,s.right);
+ const y=clamp(n.y,s.top,s.bottom);
+ return Math.hypot(n.x-x,n.y-y)<n.r;
+}
+
+function resolveStageCollision(n){
+ const s=stageRect();
+
+ const closestX=clamp(n.x,s.left,s.right);
+ const closestY=clamp(n.y,s.top,s.bottom);
+
+ let dx=n.x-closestX;
+ let dy=n.y-closestY;
+ let d=Math.hypot(dx,dy);
+
+ if(d>=n.r)return;
+
+ if(d===0){
+  const edges=[
+   {distance:Math.abs(n.x-s.left),x:s.left-n.r,y:n.y},
+   {distance:Math.abs(s.right-n.x),x:s.right+n.r,y:n.y},
+   {distance:Math.abs(n.y-s.top),x:n.x,y:s.top-n.r},
+   {distance:Math.abs(s.bottom-n.y),x:n.x,y:s.bottom+n.r}
+  ];
+
+  edges.sort((a,b)=>a.distance-b.distance);
+  n.x=edges[0].x;
+  n.y=edges[0].y;
+  return;
+ }
+
+ const push=n.r-d+1;
+ n.x+=(dx/d)*push;
+ n.y+=(dy/d)*push;
+}
+
+function randomPos(){
+ return {x:rand(35,W-35),y:rand(135,H-35)};
+}
+
+function getCrowdCount(){
+ return Math.round(110+(level-1)*(160/24));
+}
+
+const idleLines=[
+"BEST CONCERT EVER!","PUT DILJIT ON!",
+"There's some laddu at the entrance if you were starving.",
+"Alors on danse!","MY FEET ARE RUNNING ON AUTOPILOT!",
+"I'M GOING TO DANCE UNTIL MY SHOES EXPLODE!",
+"WHO BROUGHT THE SAMOSAS?","THIS BEAT IS ILLEGAL!",
+"I'VE BEEN HERE SINCE THE SOUND CHECK!","BHAI, TURN IT UP!"
+];
+
+const panicLines=[
+"You're too creative!","ow!","bleagh!","Balle Balle, what a night.",
+"You're totes cray!","MY LADDU!","I JUST WANTED TO DANCE!",
+"WHY IS EVERYONE RUNNING?!","MUMMY, COME PICK ME UP!",
+"THAT WAS NOT PART OF THE CHOREOGRAPHY!"
+];
+
+const djLines=[
+"Well now I'm deCOMPOSING","I see a pretty bright light!",
+"I hear strange noises...","And the beat goes on...",
+"WHO UNPLUGGED THE VIBES?!","I'M LOSING THE RHYTHM!",
+"THIS IS NOT THE REMIX I ORDERED!","BALLE BALLE—oh."
+];
+
+const policeLines=[
+"Stop it you criminal scum!","Don't be a rascal!",
+"Don't do this, bhai!","FREEZE! This is not a dance floor anymore!",
+"Hands where I can see them!","We've got a troublemaker!",
+"Oi! Stop running!"
+];
+
+const weapons=[
+{level:0,name:"Pistol",delay:.5,speed:700,damage:1},
+{level:5,name:"SMG",delay:.13,speed:750,damage:1},
+{level:10,name:"SR",delay:.8,speed:1100,damage:3},
+{level:15,name:"GAT4",delay:1.1,speed:550,damage:5},
+{level:20,name:"Shotgun",delay:.7,speed:650,damage:2},
+{level:25,name:"Kruto Scope",delay:.65,speed:1100,damage:3},
+{level:30,name:"Burst Rifle",delay:.12,speed:800,damage:1},
+{level:35,name:"Heavy Machine Gun",delay:.18,speed:700,damage:2},
+{level:40,name:"Precision Rifle",delay:.9,speed:1200,damage:4},
+{level:45,name:"Advanced SMG",delay:.1,speed:850,damage:2},
+{level:50,name:"Tactical Launcher",delay:1.2,speed:550,damage:5},
+{level:55,name:"Experimental Rifle",delay:.45,speed:950,damage:4},
+{level:60,name:"Ultimate Weapon",delay:.25,speed:1000,damage:6}
+];
+
+let keys={};
+let mouse={x:W/2,y:H/2,down:false};
+
+let player,crowd,police,dj,bullets,floating;
+let bandmates=[];
+
+let level=1,xp=0,score=0,casualties=0,suspicion=0;
+
+let slowActive=false,slowRemaining=0;
+let lockOn=false;
+let selectedTarget=null;
+
+let equipment=false,gameTime=0,lastShot=-10;
+
+let paused=false,saveOpen=false;
+let transition=0,transitionType="";
+let objectiveComplete=false,missionFailed=false;
+let policeAlerted=false,lastTime=performance.now();
+let noticeTimer=0;
+
+function notice(text,seconds=2){
+ $("notice").textContent=text;
+ noticeTimer=seconds;
+}
+
+function bubble(n,text,duration=3){
+ n.talk=text;
+ n.talkTimer=duration;
+}
+
+function floatText(x,y,text,color="#fff"){
+ floating.push({x,y,text,color,time:2.2});
+}
+
+function safePos(existing,min=45){
+ for(let i=0;i<150;i++){
+  const p=randomPos();
+
+  if(existing.every(n=>dist(n,p)>min)&&
+     !overlapsStage({...p,r:10})){
+   return p;
+  }
+ }
+ return randomPos();
+}
+
+function makeNPC(type,x,y){
+ const n={
+  type,x,y,
+  r:type==="dj"?15:type==="police"?12:9,
+  vx:rand(-40,40),
+  vy:rand(-40,40),
+  hp:type==="dj"?1:type==="police"?2:1,
+  alive:true,
+  talk:"",
+  talkTimer:0,
+  nextTalk:rand(3,10),
+  wander:rand(1,3),
+  attack:0,
+  skill:1,
+  panicking:false,
+  panicX:rand(35,W-35),
+  panicY:rand(135,H-35),
+  patrolX:rand(35,W-35),
+  patrolY:rand(135,H-35),
+  patrolTimer:rand(1,4)
+ };
+
+ if(type==="white"&&Math.random()<.9){
+  bubble(n,idleLines[Math.floor(rand(0,idleLines.length))],rand(2,4));
+ }
+
+ if(type==="dj"){
+  bubble(n,djLines[Math.floor(rand(0,djLines.length))],4);
+  n.nextTalk=rand(5,9);
+ }
+
+ return n;
+}
+
+function makeCrowd(){
+ crowd=[];
+ const count=getCrowdCount();
+
+ for(let i=0;i<count;i++){
+  const p=safePos([player,dj,...crowd],24);
+  crowd.push(makeNPC("white",p.x,p.y));
+ }
+}
+
+function resetLevel(){
+ bullets=[];
+ floating=[];
+ police=[];
+ bandmates=[];
+
+ suspicion=0;
+ policeAlerted=false;
+
+ slowActive=false;
+ slowRemaining=0;
+ lockOn=false;
+ selectedTarget=null;
+ equipment=false;
+
+ objectiveComplete=false;
+ missionFailed=false;
+ transition=0;
+ transitionType="";
+
+ player={
+  x:rand(100,W-100),
+  y:rand(160,H-80),
+  r:9,
+  speed:240,
+  hp:3,
+  maxHp:3,
+  type:"white",
+  alive:true,
+  talk:"",
+  talkTimer:0,
+  nextTalk:rand(2,8)
+ };
+
+ if(Math.random()<.9){
+  bubble(player,idleLines[Math.floor(rand(0,idleLines.length))],rand(2,4));
+ }
+
+ dj=makeNPC("dj",W/2,75);
+ makeCrowd();
+ spawnPolice();
+ updateHUD();
+}
+
+function weapon(){
+ let selected=weapons[0];
+
+ for(const w of weapons){
+  if(level>=w.level)selected=w;
+ }
+
+ return selected;
+}
+
+function addXP(amount){
+ xp+=amount;
+
+ while(xp>=1500){
+  xp-=1500;
+  level++;
+  notice("LEVEL UP!\nLEVEL "+level,2.5);
+ }
+}
+
+function updateHUD(){
+ $("level").textContent=level;
+ $("xp").textContent=xp;
+ $("score").textContent=score;
+ $("health").textContent=player.hp;
+ $("casualties").textContent=casualties;
+ $("suspicion").textContent=Math.floor(suspicion);
+ $("weapon").textContent=weapon().name;
+ $("policeCount").textContent=police.filter(p=>p.alive).length;
+ $("djStatus").textContent=dj.alive?"Active":"Defeated";
+ $("crowdCount").textContent=crowd.filter(n=>n.alive).length;
+
+ if(!lockOn){
+  $("targetStatus").textContent="Off";
+ }else if(selectedTarget&&selectedTarget.alive){
+  $("targetStatus").textContent=selectedTarget.type.toUpperCase();
+ }else{
+  $("targetStatus").textContent="Waiting";
+ }
+}
+
+function missionFail(){
+ if(missionFailed||objectiveComplete)return;
+
+ missionFailed=true;
+ transitionType="fail";
+ transition=2.5;
+ notice("MISSION FAILED!\nRestarting level...",2.5);
+}
+
+function completeLevel(){
+ if(objectiveComplete||missionFailed)return;
+
+ objectiveComplete=true;
+ transitionType="complete";
+ transition=2.5;
+ score+=500;
+ addXP(500);
+ notice("Mission Completed!",2.5);
+}
+
+function nextLevel(){
+ level++;
+ resetLevel();
+ notice("LEVEL "+level+"\nNEW CONCERT!",2.5);
+}
+
+function restartLevel(){
+ resetLevel();
+ notice("LEVEL "+level+"\nTRY AGAIN!",2.5);
+}
+
+function killNPC(n){
+ if(!n.alive)return;
+
+ n.alive=false;
+
+ if(n===selectedTarget){
+  selectedTarget=null;
+  notice("TARGET LOST!\nSELECT ANOTHER TARGET",1.5);
+ }
+
+ if(n.type==="white"){
+  casualties++;
+  floatText(n.x,n.y,panicLines[Math.floor(rand(0,panicLines.length))]);
+  missionFail();
+
+ }else if(n.type==="police"){
+  score+=100;
+  addXP(100);
+  floatText(n.x,n.y,"POLICE DOWN!","#ffbb55");
+
+ }else if(n.type==="dj"){
+  const line=djLines[Math.floor(rand(0,djLines.length))];
+  floatText(n.x,n.y,line,"#ffe66d");
+  floatText(n.x,n.y+20,"DJ DEFEATED!","#ffe66d");
+  score+=500;
+  addXP(100);
+  completeLevel();
+ }
+}
+
+function spawnPolice(){
+ const max=Math.min(3,1+Math.floor((level-1)/12));
+
+ while(police.filter(p=>p.alive).length<max){
+  let best=null;
+  let bestDistance=-1;
+
+  for(let i=0;i<100;i++){
+   const p=randomPos();
+   const distance=dist(p,player);
+   const separated=police.every(c=>!c.alive||dist(c,p)>100);
+
+   if(separated&&!overlapsStage({...p,r:12})&&distance>bestDistance){
+    best=p;
+    bestDistance=distance;
+   }
+  }
+
+  if(!best)best=safePos([player,...police],100);
+
+  const cop=makeNPC("police",best.x,best.y);
+  cop.skill=1+Math.min(1,level/30);
+  cop.patrolX=rand(35,W-35);
+  cop.patrolY=rand(135,H-35);
+  cop.patrolTimer=rand(.5,2);
+
+  police.push(cop);
+  bubble(cop,policeLines[Math.floor(rand(0,policeLines.length))],3);
+ }
+}
+
+// TARGET SELECTION
+function getLockTargets(){
+ return [dj,...police,...bandmates].filter(n=>
+  n&&n.alive&&(n.type==="dj"||n.type==="police"||n.type==="bandmate")
+ );
+}
+
+// The aiming point is above the target's head.
+function getOverheadPoint(n){
+ return {
+  x:n.x,
+  y:n.y-n.r-22
+ };
+}
+
+function selectTarget(direction){
+ if(!lockOn)return;
+
+ const targets=getLockTargets();
+
+ if(targets.length===0){
+  selectedTarget=null;
+  notice("NO HOSTILE TARGETS",1);
+  updateHUD();
+  return;
+ }
+
+ let index=targets.indexOf(selectedTarget);
+
+ if(index===-1){
+  let nearest=0;
+  let nearestDistance=Infinity;
+
+  for(let i=0;i<targets.length;i++){
+   const d=dist(player,targets[i]);
+
+   if(d<nearestDistance){
+    nearestDistance=d;
+    nearest=i;
+   }
+  }
+
+  index=nearest;
+ }else{
+  index=(index+direction+targets.length)%targets.length;
+ }
+
+ selectedTarget=targets[index];
+
+ notice("TARGET: "+selectedTarget.type.toUpperCase(),1);
+ updateHUD();
+}
+
+function toggleLockOn(){
+ lockOn=!lockOn;
+ selectedTarget=null;
+
+ if(lockOn){
+  notice("LOCK-ON ENABLED\nUSE ARROW KEYS TO SELECT",2);
+ }else{
+  notice("LOCK-ON DISABLED",1);
+ }
+
+ updateHUD();
+}
+
+function fire(){
+ const w=weapon();
+
+ if(gameTime-lastShot<w.delay)return;
+ lastShot=gameTime;
+
+ let target={x:mouse.x,y:mouse.y};
+ let lockedTarget=null;
+
+ // Lock-on shots aim at the point ABOVE the selected target.
+ if(lockOn&&selectedTarget&&selectedTarget.alive){
+  lockedTarget=selectedTarget;
+  target=getOverheadPoint(selectedTarget);
+ }
+
+ const a=Math.atan2(target.y-player.y,target.x-player.x);
+ const count=w.name==="Shotgun"?5:1;
+
+ for(let i=0;i<count;i++){
+  const angle=a+(count===1?0:rand(-.2,.2));
+
+  bullets.push({
+   x:player.x,
+   y:player.y,
+   vx:Math.cos(angle)*w.speed,
+   vy:Math.sin(angle)*w.speed,
+   damage:w.damage,
+   r:4,
+   life:1.6,
+   lockedTarget
+  });
+ }
+}
+
+function updateNPC(n,dt){
+ if(!n.alive)return;
+
+ n.talkTimer-=dt;
+ n.nextTalk-=dt;
+ n.wander-=dt;
+
+ if(n.type==="white"){
+
+  if(suspicion>=100){
+
+   if(!n.panicking){
+    n.panicking=true;
+    n.panicX=rand(35,W-35);
+    n.panicY=rand(135,H-35);
+    n.wander=0;
+
+    bubble(n,panicLines[Math.floor(rand(0,panicLines.length))],3);
+    n.nextTalk=rand(2,5);
+   }
+
+   if(n.wander<=0||dist(n,{x:n.panicX,y:n.panicY})<25){
+    n.panicX=rand(35,W-35);
+    n.panicY=rand(135,H-35);
+    n.wander=rand(1,2.5);
+   }
+
+   const angle=Math.atan2(n.panicY-n.y,n.panicX-n.x);
+   const speed=rand(110,165);
+
+   n.vx=Math.cos(angle)*speed;
+   n.vy=Math.sin(angle)*speed;
+
+   n.x+=n.vx*dt;
+   n.y+=n.vy*dt;
+
+   if(n.nextTalk<=0){
+    bubble(n,panicLines[Math.floor(rand(0,panicLines.length))],3);
+    n.nextTalk=rand(2,5);
+   }
+
+  }else{
+
+   n.panicking=false;
+
+   if(n.wander<=0){
+    n.vx=rand(-40,40);
+    n.vy=rand(-40,40);
+    n.wander=rand(1,3);
+   }
+
+   n.x+=n.vx*dt;
+   n.y+=n.vy*dt;
+
+   if(n.nextTalk<=0){
+    if(Math.random()<.9){
+     bubble(n,idleLines[Math.floor(rand(0,idleLines.length))],3);
+    }
+    n.nextTalk=rand(8,17);
+   }
+  }
+ }
+
+ if(n.type==="police"){
+
+  if(suspicion>=100){
+
+   const a=Math.atan2(player.y-n.y,player.x-n.x);
+   const speed=(95+level*1.4)*n.skill;
+
+   n.x+=Math.cos(a)*speed*dt;
+   n.y+=Math.sin(a)*speed*dt;
+
+   n.attack-=dt;
+
+   if(dist(n,player)<25&&n.attack<=0){
+    player.hp--;
+    n.attack=1.1;
+
+    floatText(player.x,player.y,"HIT!","#ff7777");
+
+    if(player.hp<=0){
+     player.hp=3;
+     player.x=rand(70,W-70);
+     player.y=rand(140,H-70);
+     resolveStageCollision(player);
+     notice("YOU WERE TAKEN DOWN!",2);
+    }
+   }
+
+   if(n.nextTalk<=0){
+    bubble(n,policeLines[Math.floor(rand(0,policeLines.length))],2.5);
+    n.nextTalk=rand(5,9);
+   }
+
+  }else{
+
+   n.patrolTimer-=dt;
+
+   if(n.patrolTimer<=0||dist(n,{x:n.patrolX,y:n.patrolY})<18){
+    n.patrolX=rand(35,W-35);
+    n.patrolY=rand(135,H-35);
+    n.patrolTimer=rand(2,5);
+   }
+
+   const patrolAngle=Math.atan2(n.patrolY-n.y,n.patrolX-n.x);
+   const patrolSpeed=48+level*.4;
+
+   n.x+=Math.cos(patrolAngle)*patrolSpeed*dt;
+   n.y+=Math.sin(patrolAngle)*patrolSpeed*dt;
+
+   if(n.nextTalk<=0){
+    bubble(n,policeLines[Math.floor(rand(0,policeLines.length))],2.5);
+    n.nextTalk=rand(7,12);
+   }
+  }
+ }
+
+ if(n.type==="dj"&&n.nextTalk<=0){
+  bubble(n,djLines[Math.floor(rand(0,djLines.length))],3.5);
+  n.nextTalk=rand(5,9);
+ }
+
+ if(n.type!=="dj"){
+  resolveStageCollision(n);
+ }
+
+ n.x=clamp(n.x,15,W-15);
+ n.y=clamp(n.y,50,H-15);
+}
+
+// Crowd bounce system: maximum three NPCs in a collision chain.
+function resolveCrowdCollisions(){
+ const alreadyBounced=new Set();
+
+ for(let i=0;i<crowd.length;i++){
+  const a=crowd[i];
+
+  if(!a.alive||alreadyBounced.has(a))continue;
+
+  for(let j=i+1;j<crowd.length;j++){
+   const b=crowd[j];
+
+   if(!b.alive||alreadyBounced.has(b))continue;
+
+   let dx=b.x-a.x;
+   let dy=b.y-a.y;
+   let d=Math.hypot(dx,dy);
+
+   if(d===0){
+    dx=rand(-1,1);
+    dy=rand(-1,1);
+    d=Math.hypot(dx,dy)||1;
+   }
+
+   const minimum=a.r+b.r;
+
+   if(d>=minimum)continue;
+
+   const nx=dx/d;
+   const ny=dy/d;
+   const overlap=minimum-d;
+
+   a.x-=nx*(overlap/2+1);
+   a.y-=ny*(overlap/2+1);
+   b.x+=nx*(overlap/2+1);
+   b.y+=ny*(overlap/2+1);
+
+   const bounce=rand(90,150);
+   a.vx-=nx*bounce;
+   a.vy-=ny*bounce;
+   b.vx+=nx*bounce;
+   b.vy+=ny*bounce;
+
+   alreadyBounced.add(a);
+   alreadyBounced.add(b);
+
+   let third=null;
+   let thirdDistance=Infinity;
+
+   for(const c of crowd){
+    if(!c.alive||c===a||c===b||alreadyBounced.has(c))continue;
+
+    const dc=dist(c,b);
+
+    if(dc<c.r+b.r+5&&dc<thirdDistance){
+     third=c;
+     thirdDistance=dc;
+    }
+   }
+
+   if(third){
+    let tx=third.x-b.x;
+    let ty=third.y-b.y;
+    let td=Math.hypot(tx,ty)||1;
+
+    tx/=td;
+    ty/=td;
+
+    const chainBounce=rand(55,95);
+    third.vx+=tx*chainBounce;
+    third.vy+=ty*chainBounce;
+
+    third.x+=tx*rand(9,18);
+    third.y+=ty*rand(9,18);
+
+    alreadyBounced.add(third);
+   }
+
+   break;
+  }
+ }
+
+ for(const n of crowd){
+  if(!n.alive)continue;
+  resolveStageCollision(n);
+  n.x=clamp(n.x,15,W-15);
+  n.y=clamp(n.y,50,H-15);
+ }
+}
+
+function update(dt){
+ if(paused)return;
+
+ gameTime+=dt;
+
+ if(transition>0){
+  transition-=dt;
+
+  if(transition<=0){
+   if(transitionType==="fail")restartLevel();
+   if(transitionType==="complete")nextLevel();
+  }
+
+  return;
+ }
+
+ if(slowActive){
+  slowRemaining-=dt;
+
+  if(slowRemaining<=0){
+   slowActive=false;
+   slowRemaining=0;
+  }
+ }
+
+ const sim=slowActive?dt/(level+1):dt;
+
+ if(equipment){
+  suspicion=clamp(suspicion+dt*50,0,100);
+ }else{
+  suspicion=clamp(suspicion-dt*5,0,100);
+ }
+
+ if(suspicion>=100&&!policeAlerted){
+  policeAlerted=true;
+  notice("SUSPICION MAXED!\nPOLICE ARE COMING!",3);
+ }
+
+ let dx=0,dy=0;
+
+ if(keys.KeyW)dy--;
+ if(keys.KeyS)dy++;
+ if(keys.KeyA)dx--;
+ if(keys.KeyD)dx++;
+
+ if(!lockOn){
+  if(keys.ArrowUp)dy--;
+  if(keys.ArrowDown)dy++;
+  if(keys.ArrowLeft)dx--;
+  if(keys.ArrowRight)dx++;
+ }
+
+ const m=Math.hypot(dx,dy)||1;
+
+ player.x=clamp(player.x+dx/m*player.speed*sim,10,W-10);
+ resolveStageCollision(player);
+
+ player.y=clamp(player.y+dy/m*player.speed*sim,45,H-10);
+ resolveStageCollision(player);
+
+ player.x=clamp(player.x,10,W-10);
+ player.y=clamp(player.y,45,H-10);
+
+ player.talkTimer-=sim;
+ player.nextTalk-=sim;
+
+ if(player.nextTalk<=0){
+  if(Math.random()<.9){
+   bubble(player,idleLines[Math.floor(rand(0,idleLines.length))],3);
+  }
+  player.nextTalk=rand(8,17);
+ }
+
+ if(mouse.down&&equipment)fire();
+
+ crowd.forEach(n=>updateNPC(n,sim));
+ police.forEach(n=>updateNPC(n,sim));
+ bandmates.forEach(n=>updateNPC(n,sim));
+ updateNPC(dj,sim);
+
+ if(selectedTarget&&!selectedTarget.alive){
+  selectedTarget=null;
+ }
+
+ resolveCrowdCollisions();
+
+ // PROJECTILE COLLISIONS
+ for(const b of bullets){
+  b.x+=b.vx*sim;
+  b.y+=b.vy*sim;
+  b.life-=sim;
+
+  if(b.life<=0)continue;
+
+  const targets=[...crowd,...police,...bandmates,dj].filter(n=>n.alive);
+
+  for(const n of targets){
+
+   // A lock-on bullet ignores the selected target's body.
+   // It only hits when it reaches the overhead aiming point.
+   if(b.lockedTarget===n){
+    const overhead=getOverheadPoint(n);
+
+    if(Math.hypot(b.x-overhead.x,b.y-overhead.y)<13){
+     n.hp-=b.damage;
+     b.life=0;
+
+     if(n.hp<=0){
+      killNPC(n);
+     }else if(n.type==="dj"){
+      bubble(n,djLines[Math.floor(rand(0,djLines.length))],3);
+     }
+
+     break;
+    }
+
+    continue;
+   }
+
+   // Normal bullets still collide normally with other NPCs.
+   if(dist(b,n)<n.r+b.r){
+    n.hp-=b.damage;
+    b.life=0;
+
+    if(n.hp<=0){
+     killNPC(n);
+    }else if(n.type==="dj"){
+     bubble(n,djLines[Math.floor(rand(0,djLines.length))],3);
+    }
+
+    break;
+   }
+  }
+ }
+
+ bullets=bullets.filter(b=>b.life>0);
+
+ for(const f of floating){
+  f.y-=20*sim;
+  f.time-=sim;
+ }
+
+ floating=floating.filter(f=>f.time>0);
+
+ if(noticeTimer>0){
+  noticeTimer-=dt;
+  if(noticeTimer<=0)$("notice").textContent="";
+ }
+
+ updateHUD();
+}
+
+function drawBubble(n){
+ if(!n.talk||n.talkTimer<=0)return;
+
+ ctx.save();
+ ctx.font="11px Arial";
+
+ const width=Math.min(180,Math.max(65,ctx.measureText(n.talk).width+14));
+ const x=clamp(n.x-width/2,3,W-width-3);
+ const y=n.y-n.r-32;
+
+ ctx.fillStyle="rgba(15,15,25,.5)";
+ ctx.strokeStyle="rgba(255,255,255,.5)";
+
+ ctx.beginPath();
+ ctx.roundRect(x,y,width,23,6);
+ ctx.fill();
+ ctx.stroke();
+
+ let t=n.talk;
+
+ while(ctx.measureText(t).width>width-10&&t.length>4){
+  t=t.slice(0,-2)+"…";
+ }
+
+ ctx.fillStyle="rgba(255,255,255,.95)";
+ ctx.textAlign="center";
+ ctx.textBaseline="middle";
+ ctx.fillText(t,x+width/2,y+11.5);
+
+ ctx.restore();
+}
+
+function drawNPC(n,color){
+ if(!n.alive)return;
+
+ ctx.beginPath();
+ ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
+ ctx.fillStyle=color;
+ ctx.fill();
+
+ ctx.strokeStyle="#ffffff66";
+ ctx.lineWidth=2;
+ ctx.stroke();
+
+ drawBubble(n);
+}
+
+// Overhead targeting reticle.
+function drawTargetReticle(){
+ if(!lockOn||!selectedTarget||!selectedTarget.alive)return;
+
+ const point=getOverheadPoint(selectedTarget);
+ const x=point.x;
+ const y=point.y;
+ const pulse=1+Math.sin(gameTime*7)*.12;
+
+ ctx.save();
+ ctx.translate(x,y);
+ ctx.scale(pulse,pulse);
+
+ ctx.strokeStyle="#65f5ff";
+ ctx.lineWidth=2.5;
+ ctx.shadowColor="#65f5ff";
+ ctx.shadowBlur=12;
+
+ ctx.beginPath();
+ ctx.arc(0,0,13,0,Math.PI*2);
+ ctx.stroke();
+
+ ctx.beginPath();
+ ctx.moveTo(-20,0);ctx.lineTo(-11,0);
+ ctx.moveTo(20,0);ctx.lineTo(11,0);
+ ctx.moveTo(0,-20);ctx.lineTo(0,-11);
+ ctx.moveTo(0,20);ctx.lineTo(0,11);
+ ctx.stroke();
+
+ ctx.shadowBlur=0;
+
+ ctx.fillStyle="#65f5ff";
+ ctx.font="bold 10px Arial";
+ ctx.textAlign="center";
+ ctx.fillText("TARGET",0,-25);
+
+ ctx.restore();
+}
+
+function draw(){
+ ctx.clearRect(0,0,W,H);
+
+ ctx.fillStyle="#252438";
+ ctx.fillRect(0,0,W,H);
+
+ ctx.strokeStyle="#ffffff0b";
+
+ for(let x=0;x<W;x+=50){
+  ctx.beginPath();
+  ctx.moveTo(x,0);
+  ctx.lineTo(x,H);
+  ctx.stroke();
+ }
+
+ for(let y=0;y<H;y+=50){
+  ctx.beginPath();
+  ctx.moveTo(0,y);
+  ctx.lineTo(W,y);
+  ctx.stroke();
+ }
+
+ // Original stage — unchanged.
+ ctx.fillStyle="#42365d";
+ ctx.fillRect(W/2-85,25,170,95);
+
+ ctx.strokeStyle="#c4a4ff";
+ ctx.lineWidth=2;
+ ctx.strokeRect(W/2-85,25,170,95);
+
+ ctx.fillStyle="white";
+ ctx.font="bold 14px Arial";
+ ctx.textAlign="center";
+ ctx.fillText("DJ STAGE",W/2,44);
+
+ crowd.forEach(n=>drawNPC(n,"#f4f4f4"));
+ police.forEach(n=>drawNPC(n,"#ff9d37"));
+ bandmates.forEach(n=>drawNPC(n,"#bd83ff"));
+ drawNPC(dj,"#f04455");
+
+ // Aim line points to the overhead marker while locked on.
+ if(equipment){
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(player.x,player.y);
+
+  const aimTarget=(lockOn&&selectedTarget&&selectedTarget.alive)
+   ?getOverheadPoint(selectedTarget)
+   :mouse;
+
+  ctx.lineTo(aimTarget.x,aimTarget.y);
+  ctx.strokeStyle="rgba(255,255,255,.55)";
+  ctx.lineWidth=2;
+  ctx.setLineDash([7,6]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  if(!(lockOn&&selectedTarget)){
+   ctx.beginPath();
+   ctx.arc(mouse.x,mouse.y,5,0,Math.PI*2);
+   ctx.strokeStyle="rgba(255,255,255,.7)";
+   ctx.lineWidth=1.5;
+   ctx.stroke();
+  }
+
+  ctx.restore();
+ }
+
+ // Player remains identical to a normal white crowd NPC.
+ drawNPC(player,"#f4f4f4");
+
+ drawTargetReticle();
+
+ bullets.forEach(b=>{
+  ctx.beginPath();
+  ctx.arc(b.x,b.y,b.r,0,Math.PI*2);
+  ctx.fillStyle="#ffe36b";
+  ctx.fill();
+ });
+
+ floating.forEach(f=>{
+  ctx.globalAlpha=clamp(f.time,0,1);
+  ctx.fillStyle=f.color;
+  ctx.font="bold 13px Arial";
+  ctx.textAlign="center";
+  ctx.fillText(f.text,f.x,f.y);
+  ctx.globalAlpha=1;
+ });
+
+ if(slowActive){
+  ctx.fillStyle="#75eaff";
+  ctx.font="bold 16px Arial";
+  ctx.textAlign="right";
+  ctx.fillText("SLOW MOTION "+slowRemaining.toFixed(1)+"s",W-15,25);
+ }
+
+ if(lockOn){
+  ctx.fillStyle="#65f5ff";
+  ctx.font="bold 14px Arial";
+  ctx.textAlign="right";
+  ctx.fillText(
+   selectedTarget?"LOCK-ON: "+selectedTarget.type.toUpperCase():"LOCK-ON: WAITING FOR TARGET",
+   W-15,
+   slowActive?48:25
+  );
+ }
+
+ if(suspicion>0){
+  ctx.fillStyle="#0009";
+  ctx.fillRect(W/2-100,H-35,200,10);
+
+  ctx.fillStyle="#ff9d37";
+  ctx.fillRect(W/2-100,H-35,200*suspicion/100,10);
+
+  ctx.strokeStyle="#fff8";
+  ctx.strokeRect(W/2-100,H-35,200,10);
+ }
+}
+
+function frame(now){
+ const dt=Math.min(.05,(now-lastTime)/1000);
+ lastTime=now;
+
+ update(dt);
+ draw();
+
+ requestAnimationFrame(frame);
+}
+
+// CONTROLS
+addEventListener("keydown",e=>{
+ if(e.code==="KeyA"&&e.shiftKey&&!e.repeat){
+  e.preventDefault();
+  toggleLockOn();
+  return;
+ }
+
+ if(lockOn&&!e.repeat){
+  if(e.code==="ArrowRight"||e.code==="ArrowUp"){
+   e.preventDefault();
+   selectTarget(1);
+   return;
+  }
+
+  if(e.code==="ArrowLeft"||e.code==="ArrowDown"){
+   e.preventDefault();
+   selectTarget(-1);
+   return;
+  }
+ }
+
+ if(e.code==="KeyE"&&!e.repeat){
+  equipment=!equipment;
+  notice(equipment?"AIMING ENABLED":"AIMING DISABLED",1);
+ }
+
+ keys[e.code]=true;
+
+ if(["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)){
+  e.preventDefault();
+ }
+
+ if(e.code==="Space"&&!e.repeat&&!slowActive&&level>=1){
+  slowActive=true;
+  slowRemaining=10;
+ }
+
+ if(e.code==="F6"){
+  e.preventDefault();
+  toggleSaveMenu();
+ }
+});
+
+addEventListener("keyup",e=>{
+ keys[e.code]=false;
+});
+
+canvas.addEventListener("mousemove",e=>{
+ const r=canvas.getBoundingClientRect();
+ mouse.x=e.clientX-r.left;
+ mouse.y=e.clientY-r.top;
+});
+
+canvas.addEventListener("mousedown",e=>{
+ if(e.button===0)mouse.down=true;
+});
+
+addEventListener("mouseup",e=>{
+ if(e.button===0)mouse.down=false;
+});
+
+canvas.addEventListener("contextmenu",e=>e.preventDefault());
+
+// SAVE MANAGER
+function saveData(){
+ return {
+  level,xp,score,casualties,
+  player:{
+   x:player.x,y:player.y,hp:player.hp,
+   talk:player.talk,talkTimer:player.talkTimer
+  },
+  suspicion,
+  equipment,
+  djAlive:dj.alive,
+  djTalk:dj.talk,
+  djTalkTimer:dj.talkTimer,
+  crowd:crowd.map(n=>({
+   x:n.x,y:n.y,alive:n.alive,hp:n.hp,
+   panicking:n.panicking,
+   panicX:n.panicX,panicY:n.panicY,
+   vx:n.vx,vy:n.vy,
+   talk:n.talk,talkTimer:n.talkTimer
+  })),
+  police:police.map(n=>({
+   x:n.x,y:n.y,alive:n.alive,hp:n.hp,
+   patrolX:n.patrolX,patrolY:n.patrolY,
+   patrolTimer:n.patrolTimer
+  }))
+ };
+}
+
+function loadData(d){
+ level=d.level??1;
+ xp=d.xp??0;
+ score=d.score??0;
+ casualties=d.casualties??0;
+
+ resetLevel();
+
+ player.x=d.player?.x??player.x;
+ player.y=d.player?.y??player.y;
+ player.hp=d.player?.hp??3;
+ player.talk=d.player?.talk??player.talk;
+ player.talkTimer=d.player?.talkTimer??player.talkTimer;
+ resolveStageCollision(player);
+
+ suspicion=d.suspicion??0;
+ equipment=d.equipment??false;
+ dj.alive=d.djAlive!==false;
+ dj.talk=d.djTalk??dj.talk;
+ dj.talkTimer=d.djTalkTimer??dj.talkTimer;
+
+ if(Array.isArray(d.crowd)){
+  crowd=d.crowd.map(c=>{
+   const n=makeNPC("white",c.x,c.y);
+   Object.assign(n,c);
+   resolveStageCollision(n);
+   return n;
+  });
+ }
+
+ if(Array.isArray(d.police)){
+  police=d.police.map(c=>{
+   const n=makeNPC("police",c.x,c.y);
+   Object.assign(n,c);
+   resolveStageCollision(n);
+   return n;
+  });
+ }
+
+ policeAlerted=suspicion>=100;
+
+ updateHUD();
+ notice("SAVE LOADED!");
+}
+
+function slotKey(i){
+ return "bbb_save_slot_"+i;
+}
+
+function toggleSaveMenu(){
+ if(saveOpen){
+  closeSaveMenu();
+  return;
+ }
+
+ saveOpen=true;
+ paused=true;
+ $("saveMenu").style.display="flex";
+ renderSlots();
+}
+
+function closeSaveMenu(){
+ saveOpen=false;
+ paused=false;
+ $("saveMenu").style.display="none";
+}
+
+function renderSlots(){
+ const host=$("slots");
+ host.innerHTML="";
+
+ for(let i=1;i<=3;i++){
+  const raw=localStorage.getItem(slotKey(i));
+  const box=document.createElement("div");
+  box.className="slot";
+
+  let summary="Empty slot";
+
+  if(raw)try{
+   const d=JSON.parse(raw);
+   summary=`Level ${d.level} · Score ${d.score}`;
+  }catch{
+   summary="Invalid save";
+  }
+
+  box.innerHTML=`<b>Slot ${i}</b><br><small>${summary}</small><br>`;
+
+  const open=document.createElement("button");
+  open.textContent="Open";
+  open.disabled=!raw;
+
+  open.onclick=()=>{
+   try{
+    loadData(JSON.parse(localStorage.getItem(slotKey(i))));
+    closeSaveMenu();
+   }catch{
+    alert("Could not load this save.");
+   }
+  };
+
+  const save=document.createElement("button");
+  save.textContent="Save";
+
+  save.onclick=()=>{
+   localStorage.setItem(slotKey(i),JSON.stringify(saveData()));
+   renderSlots();
+  };
+
+  const clear=document.createElement("button");
+  clear.textContent="Clear";
+  clear.className="danger";
+
+  clear.onclick=()=>{
+   if(confirm("Clear slot "+i+"?")){
+    localStorage.removeItem(slotKey(i));
+    renderSlots();
+   }
+  };
+
+  box.append(open,save,clear);
+  host.append(box);
+ }
+}
+
+window.closeSaveMenu=closeSaveMenu;
+
+resetLevel();
+notice("WELCOME TO BALLE BALLE BHANGRA!",3);
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
